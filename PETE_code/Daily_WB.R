@@ -1,13 +1,18 @@
 ####### Water Balance code ##########
 source("WaterBalance/R/ET_functions.R")
 source("WaterBalance/R/WB_functions.R")
+source("katie_adds/getParkBoundary.R")
 library(tidyverse)
 library(plotly)
+library(terra)
+library(sf)
+library(mapview)
 
 ############################################################# USER INPUTS ##################################################################### 
 
-Historical <- read.csv("katie_adds/PETE_historical.csv") #KW originally pulled from data we can't acces. pulled from AWS
-
+#KW comment: Historical was originally pulled from data we can't access. Therefore, I pulled this from AWS.
+# (https://parkfutures.s3.us-west-2.amazonaws.com/maca-tprh-data/index.html)
+Historical <- read.csv("katie_adds/centroid_data/PETE_historical.csv") 
 #Site characteristics 
 wb_sites <- read.csv("PETE_site_parameters.csv") 
 
@@ -87,39 +92,3 @@ for(i in 1:nrow(wb_sites)){
   AllDailyWB[[i]] = DailyWB
 }
 WBData<-do.call(rbind,AllDailyWB)
-
-#KW exploring:
-WBData_coded <- do.call(rbind,AllDailyWB) %>%
-  group_by(Date, GCM) %>%
-  dplyr::summarize(mean_runoff = mean(W_ET_DSOIL, na.rm = TRUE)/25.4,
-                   mean_pet = mean(PET, na.rm = TRUE)/25.4,
-                   mean_rain = mean(RAIN, na.rm = TRUE)/25.4)
-# pulled from AWS:
-WBData_online <- read_csv("katie_adds/PETE_water_balance_historical.csv") 
-
-ggplot() +
-  theme_bw() +
-  geom_point(aes(WBData_coded$mean_runoff, WBData_online$`runoff in`, color = year(WBData_coded$Date)))
-
-ggplotly(ggplot() +
-           geom_line(data= WBData_online, aes(x = as_date(Date), y = `runoff in`), color = "orange") +
-           geom_point(data = WBData_coded, aes(as_date(Date), mean_runoff), cex = 0.1) +
-           theme_bw())
-
-ggplot() +
-  theme_bw() +
-  geom_point(aes(WBData_coded$mean_rain, WBData_online$`rain in`, color = year(WBData_coded$Date)))
-
-ggplotly(ggplot() +
-           geom_line(data= WBData_online, aes(x = as_date(Date), y = `rain in`), color = "orange") +
-           geom_point(data = WBData_coded, aes(as_date(Date), mean_rain), cex = 0.25) +
-           theme_bw())
-
-ggplot() +
-  theme_bw() +
-  geom_point(aes(WBData_coded$mean_pet, WBData_online$`PET in`, color = year(WBData_coded$Date)))
-
-ggplotly(ggplot() +
-           geom_line(data= WBData_online, aes(x = as_date(Date), y = `PET in`), color = "orange") +
-           geom_point(data = WBData_coded, aes(as_date(Date), mean_pet), cex = 0.25) +
-           theme_bw())

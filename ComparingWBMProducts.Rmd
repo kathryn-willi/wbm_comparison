@@ -1,0 +1,334 @@
+---
+title: "Comparison of NPS WBM Products"
+author: "Katie Willi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      error = FALSE,
+                      fig.height = 9, 
+                      fig.width = 10)
+
+library(tidyverse)
+library(plotly)
+library(terra)
+library(sf)
+```
+
+Running the WBM code found on AWS:
+```{r}
+####### Water Balance code ##########
+source("WaterBalance/R/ET_functions.R")
+source("WaterBalance/R/WB_functions.R")
+
+############################################################# USER INPUTS ##################################################################### 
+
+#KW comment: Historical was originally pulled from data we can't access. Therefore, I pulled this from AWS.
+# (https://parkfutures.s3.us-west-2.amazonaws.com/maca-tprh-data/index.html)
+Historical <- read.csv("katie_adds/centroid_data/PETE_historical.csv") 
+#Site characteristics 
+wb_sites <- read.csv("PETE_site_parameters.csv") 
+
+n<-nrow(wb_sites)
+#Threshold temperature (deg C) for growing degree-days calculation
+T.Base = 0 
+
+#Method for PET calculation 
+Method = "Oudin"  #Oudin is default method for daily PRISM and MACA data (containing only Tmax, Tmin, and Date). 
+
+#Date format
+DateFormat = "%m/%d/%Y"
+
+############################################################ END USER INPUTS ###################################################################
+
+############################################################ CREATE CLIMATE INPUTS #############################################################
+#### Historical
+# Convert pr.In to mm and F to C
+Historical$ppt_mm <- (Historical$Precip..in.*25.4)
+Historical$tmax_C <- 5/9*(Historical$Tmax..F. - 32)
+Historical$tmin_C <- 5/9*(Historical$Tmin..F. - 32)
+Historical$tmean_C <- 5/9*(Historical$Tavg..F. - 32)
+
+######################################################### END CLIMATE INPUTS ####################################################################
+
+
+######################################################### CALCULATE WB VARIABLES ################################################################
+AllDailyWB<-list()
+DailyWB<-Historical
+
+for(i in 1:nrow(wb_sites)){
+  ID = wb_sites$SiteID[i] # KW: was previously "Site"
+  Lat = wb_sites$Lat[i]
+  Lon = wb_sites$Lon[i]
+  Elev = wb_sites$Elev[i] # KW: was previously "Elevation"
+  Aspect = wb_sites$Aspect[i]
+  Slope = wb_sites$Slope[i]
+  SWC.Max = wb_sites$SWC.Max[i]
+  Wind = wb_sites$Wind[i]
+  Snowpack.Init = wb_sites$Snowpack.Init[i]
+  Soil.Init = wb_sites$Soil.Init[i]
+  Shade.Coeff = wb_sites$Shade.Coeff[i]
+  
+  #Calculate daily water balance variables 
+  
+  DailyWB$ID = ID
+  DailyWB$doy <- yday(DailyWB$Date)
+  DailyWB$daylength = get_daylength(DailyWB$Date, Lat)
+  DailyWB$jtemp = as.numeric(get_jtemp(Lon, Lat))
+  DailyWB$F = get_freeze(DailyWB$jtemp, DailyWB$tmean_C)
+  DailyWB$RAIN = get_rain(DailyWB$ppt_mm, DailyWB$F)
+  DailyWB$SNOW = get_snow(DailyWB$ppt_mm, DailyWB$F)
+  DailyWB$MELT = get_melt(DailyWB$tmean_C, DailyWB$jtemp, hock=4, DailyWB$SNOW, Snowpack.Init)
+  DailyWB$PACK = get_snowpack(DailyWB$jtemp, DailyWB$SNOW, DailyWB$MELT)
+  DailyWB$W = DailyWB$MELT + DailyWB$RAIN
+  if(Method == "Hamon"){
+    DailyWB$PET = ET_Hamon_daily(DailyWB)
+  } else {
+    if(Method == "Penman-Monteith"){
+      DailyWB$PET = ET_PenmanMonteith_daily(DailyWB)
+    } else {
+      if(Method == "Oudin"){
+        DailyWB$PET = get_OudinPET(DailyWB$doy, Lat, DailyWB$PACK, DailyWB$tmean_C, Slope, Aspect, Shade.Coeff)
+      } else {
+        print("Error - PET method not found")
+      }
+    }
+  }
+  DailyWB$PET = modify_PET(DailyWB$PET, Slope, Aspect, Lat, Shade.Coeff)
+  DailyWB$W_PET = DailyWB$W - DailyWB$PET
+  DailyWB$SOIL = get_soil(DailyWB$W, Soil.Init, DailyWB$PET, DailyWB$W_PET, SWC.Max)
+  DailyWB$DSOIL = diff(c(Soil.Init, DailyWB$SOIL))
+  DailyWB$AET = get_AET(DailyWB$W, DailyWB$PET, DailyWB$SOIL, Soil.Init)
+  DailyWB$W_ET_DSOIL = DailyWB$W - DailyWB$AET - DailyWB$DSOIL
+  DailyWB$D = DailyWB$PET - DailyWB$AET
+  DailyWB$GDD = get_GDD(DailyWB$tmean_C, T.Base)
+  AllDailyWB[[i]] = DailyWB
+}
+WBData<-do.call(rbind,AllDailyWB)
+WBData_coded <- do.call(rbind,AllDailyWB) %>%
+  group_by(Date, GCM) %>%
+  dplyr::summarize(mean_runoff = mean(W_ET_DSOIL, na.rm = TRUE)/25.4,
+                   mean_pet = mean(PET, na.rm = TRUE)/25.4,
+                   mean_rain = mean(RAIN, na.rm = TRUE)/25.4) %>%
+  # To compare against our gridded product
+  filter(year(as_date(Date)) > 1979)
+```
+
+Pulling in then organizing the data associated with the gridded product (pulling and averaging grids that intersect `wb_sites` points) and centroid product on AWS. 
+```{r}
+# This is centroid data downloaded directly from AWS for PETE
+# (https://parkfutures.s3.us-west-2.amazonaws.com/park-centroid-wb/index.html)
+WBData_online_centroid <- read_csv("katie_adds/centroid_data/PETE_water_balance_historical.csv")%>%
+  filter(year(as_date(Date)) > 1979)
+
+# This is the gridded data downloaded directly from AWS, the clipped to PETE's
+# park boundary
+WBData_online_grid <- rast("katie_adds/gridded_data/PETE_runoff_historic_gridmet_1980_2023.tif")
+
+# next we clip the grid to only grids that intersect our wb_sites points in PETE:
+NPS_points <- st_transform(sf::st_as_sf(wb_sites, coords = c("Lon", "Lat"), crs = 4326), st_crs(WBData_online_grid))
+grid_runoff <- terra::extract(WBData_online_grid, NPS_points) %>%
+  pivot_longer(cols = -ID) %>%
+  dplyr::group_by(name) %>%
+  dplyr::summarize(mean_runoff = mean(value, na.rm = TRUE)/25.4/10) %>%
+  filter(name != "runoff_NA") %>%
+  mutate(date = as_date(sub(".*_", "", name))) %>%
+  filter(year(date) < 2023)
+
+WBData_online_grid <- rast("katie_adds/gridded_data/PETE_PET_historic_gridmet_1980_2023.tif")
+
+grid_pet <- terra::extract(WBData_online_grid, NPS_points) %>%
+  pivot_longer(cols = -ID) %>%
+  dplyr::group_by(name) %>%
+  dplyr::summarize(mean_pet = mean(value, na.rm = TRUE)/25.4/10) %>%
+  filter(name != "PET_NA") %>%
+  mutate(date = as_date(sub(".*_", "", name))) %>%
+  filter(year(date) < 2023)
+
+WBData_online_grid <- rast("katie_adds/gridded_data/PETE_rain_historic_gridmet_1980_2023.tif")
+
+grid_rain <- terra::extract(WBData_online_grid, NPS_points) %>%
+  pivot_longer(cols = -ID) %>%
+  dplyr::group_by(name) %>%
+  dplyr::summarize(mean_rain = mean(value, na.rm = TRUE)/25.4/10) %>%
+  filter(name != "rain_NA") %>%
+  mutate(date = as_date(sub(".*_", "", name))) %>%
+  filter(year(date) < 2023)
+```
+
+# Runoff
+Here I am plotting each of the different WBM *runoff* products against each other for comparison.
+```{r}
+year_colors <- c("#002EA3", "#C3F73A", "#E70870", "#256BF5", "#745CFB", "#FFCA3A", "#578010", "#56104E")
+interpolated_colors <- colorRampPalette(year_colors)(length(unique(year(WBData_coded$Date))))
+
+  one <- ggplot() +
+    ggtitle("Runoff in") +
+    theme_bw() +
+    xlab("Amber's Code") +
+    ylab("Centroid Data on AWS") +
+    geom_point(aes(x = WBData_coded$mean_runoff, 
+                   y = WBData_online_centroid$`runoff in`, 
+                   color = factor(year(WBData_coded$Date)))) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ two <-  ggplot() +
+    theme_bw() +
+    xlab("Amber's Code") +
+    ylab("Gridded Data on AWS") +
+    geom_point(aes(x = WBData_coded$mean_runoff,
+                   y = grid_runoff$mean_runoff,
+                   color = factor(year(WBData_coded$Date))),
+               size = 1) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ three <-  ggplot() +
+    theme_bw() +
+    xlab("Centroid Data on AWS") +
+    ylab("Gridded Data on AWS") +
+    geom_point(aes(x = WBData_online_centroid$`runoff in`,
+                   y = grid_runoff$mean_runoff,
+                   color = factor(year(WBData_coded$Date))),
+               size = 1) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ggpubr::ggarrange(one + theme(legend.position = "none"),
+                  two + theme(legend.position = "none"),
+                  three + theme(legend.position = "none"), 
+                  ncol = 1, nrow = 3,
+  common.legend = TRUE, legend = "right")
+```
+
+All three *runoff* products plotted together through time:
+```{r}
+  ggplot() +
+    geom_point(data = WBData_online_centroid, aes(x = as_date(Date), y = `runoff in`), color = "#E70870", alpha = 1) +
+    geom_point(data = grid_runoff, aes(x = date, y = mean_runoff), color = "#256BF5", alpha = 0.6) +
+    geom_line(data = WBData_coded, aes(x = as_date(Date), y = mean_runoff), color = "black", cex = 0.2) +
+    theme_bw() +
+    labs(x = "Date", y = "Runoff in") +
+    geom_text(data = WBData_online_centroid[1, ], aes(x = as.Date(Date), y = `runoff in`), label = "Centroid Data on AWS", color = "#E70870", vjust = -35, hjust = -1) +
+    geom_text(data = grid_runoff[1, ], aes(x = date, y = mean_runoff), label = "Gridded Data on AWS", color = "#256BF5", vjust = -33, hjust = -1) +
+    geom_text(data = WBData_coded[1, ], aes(x = as.Date(Date), y = mean_runoff), label = "Amber's Code", color = "black", vjust = -31, hjust = -1.8)
+```
+
+# PET
+Here I am plotting each of the different WBM *PET* products against each other for comparison.
+```{r}
+ one <- ggplot() +
+    ggtitle("PET in") +
+    theme_bw() +
+    xlab("Amber's Code") +
+    ylab("Centroid Data on AWS") +
+    geom_point(aes(x = WBData_coded$mean_pet, 
+                   y = WBData_online_centroid$`PET in`, 
+                   color = factor(year(WBData_coded$Date)))) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ two <-  ggplot() +
+    theme_bw() +
+    xlab("Amber's Code") +
+    ylab("Gridded Data on AWS") +
+    geom_point(aes(x = WBData_coded$mean_pet,
+                   y = grid_pet$mean_pet,
+                   color = factor(year(WBData_coded$Date))),
+               size = 1) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ three <-  ggplot() +
+    theme_bw() +
+    xlab("Centroid Data on AWS") +
+    ylab("Gridded Data on AWS") +
+    geom_point(aes(x = WBData_online_centroid$`PET in`,
+                   y = grid_pet$mean_pet,
+                   color = factor(year(WBData_coded$Date))),
+               size = 1) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ggpubr::ggarrange(one + theme(legend.position = "none"),
+                  two + theme(legend.position = "none"),
+                  three + theme(legend.position = "none"),  
+                  ncol = 1, nrow = 3,
+  common.legend = TRUE, legend = "right")
+```
+
+All three *PET* products plotted together through time:
+```{r}
+  ggplot() +
+    geom_point(data = WBData_online_centroid, aes(x = as_date(Date), y = `PET in`), color = "#E70870", alpha = 1) +
+    geom_point(data = grid_pet, aes(x = date, y = mean_pet), color = "#256BF5", alpha = 0.6) +
+    geom_line(data = WBData_coded, aes(x = as_date(Date), y = mean_pet), color = "black", cex = 0.2) +
+    theme_bw() +
+    labs(x = "Date", y = "PET in") +
+    geom_text(data = WBData_online_centroid[1, ], aes(x = as.Date(Date), y = `PET in`), label = "Centroid Data on AWS", color = "#E70870", vjust = -35, hjust = -1) +
+    geom_text(data = grid_pet[1, ], aes(x = date, y = mean_pet), label = "Gridded Data on AWS", color = "#256BF5", vjust = -33, hjust = -1) +
+    geom_text(data = WBData_coded[1, ], aes(x = as.Date(Date), y = mean_pet), label = "Amber's Code", color = "black", vjust = -31, hjust = -1.8)
+```
+
+# Rain
+Here I am plotting each of the different WBM *rain* products against each other for comparison.
+```{r}
+ one <- ggplot() +
+    ggtitle("Rain in") +
+    theme_bw() +
+    xlab("Amber's Code") +
+    ylab("Centroid Data on AWS") +
+    geom_point(aes(x = WBData_coded$mean_rain, 
+                   y = WBData_online_centroid$`rain in`, 
+                   color = factor(year(WBData_coded$Date)))) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ two <-  ggplot() +
+    theme_bw() +
+    xlab("Amber's Code") +
+    ylab("Gridded Data on AWS") +
+    geom_point(aes(x = WBData_coded$mean_rain,
+                   y = grid_rain$mean_rain,
+                   color = factor(year(WBData_coded$Date))),
+               size = 1) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ three <-  ggplot() +
+    theme_bw() +
+    xlab("Centroid Data on AWS") +
+    ylab("Gridded Data on AWS") +
+    geom_point(aes(x = WBData_online_centroid$`rain in`,
+                   y = grid_rain$mean_rain,
+                   color = factor(year(WBData_coded$Date))),
+               size = 1) +
+    scale_color_manual(values = interpolated_colors) +
+    labs(color = "Year")
+
+ggpubr::ggarrange(one + theme(legend.position = "none"), 
+                  two + theme(legend.position = "none"), 
+                  three + theme(legend.position = "none"),  
+                  ncol = 1, nrow = 3,
+  common.legend = TRUE, legend = "right")
+```
+
+All three *rain* products plotted together through time:
+```{r}
+  ggplot() +
+    geom_line(data = WBData_coded, aes(x = as_date(Date), y = mean_rain), color = "black", cex = 0.2) +
+    geom_point(data = WBData_online_centroid, aes(x = as_date(Date), y = `rain in`), color = "#E70870", alpha = 1) +
+    geom_point(data = grid_rain, aes(x = date, y = mean_rain), color = "#256BF5", alpha = 0.6) +
+    #geom_line(data = WBData_coded, aes(x = as_date(Date), y = mean_rain), color = "black", cex = 0.2) +
+    theme_bw() +
+    labs(x = "Date", y = "Rain in") +
+    geom_text(data = WBData_online_centroid[1, ], aes(x = as.Date(Date), y = `PET in`), label = "Centroid Data on AWS", color = "#E70870", vjust = -35, hjust = -1) +
+    geom_text(data = grid_pet[1, ], aes(x = date, y = mean_pet), label = "Gridded Data on AWS", color = "#256BF5", vjust = -33, hjust = -1) +
+    geom_text(data = WBData_coded[1, ], aes(x = as.Date(Date), y = mean_pet), label = "Amber's Code", color = "black", vjust = -31, hjust = -1.8)
+```
+
