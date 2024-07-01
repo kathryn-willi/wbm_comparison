@@ -34,11 +34,11 @@ This RMarkdown compares data products associated with the NPS water balance mode
 
 3)  WBM outputs generated for grid cells across CONUS (<http://www.yellowstone.solutions/thredds/catalog/daily_or_monthly/v2_historical/gridmet_v_1_5_historical/catalog.html>)
 
-We selected the NPS National Historical Site Petersburg National Battlefield (PETE) as the location for comparison because model parameters were previously compiled for this site, reducing the chance for error in parameter selection.
+We selected Petersburg National Battlefield (PETE) as the location for comparison because model parameters were previously compiled for this site, reducing the chance for error in parameter selection.
 
 ## WBM R Code
 
-The WBM R Code was obtained from R scripts found on the the AWS sharepoint (<https://doimspp.sharepoint.com/:f:/s/nps-nrss-imdiv/EkhiOXJpNKNMpTYuxNO5mBoBqZBScDcbpK5M03Ha61PoCw>). This code was, in theory, used to produce the centroid WBM data that is hosted on the Thredds server (NPS Product #3 above). The directory contains example code that was used to run the WBM for the park centroid at the PETE site. In the example, 10 random points were selected within the MACA grid cell that overlaps with the park centroid. The WBM was then run for each point, which involved extracting spatial model parameters (e.g., slope, aspect, soil storage) at each point and then running the WBM for each point. The ten runs were then aggregated using a daily average to produce a daily timeseries for each WBM variable (i.e., runoff, PET, AET, etc).
+The WBM R Code was obtained from R scripts found on the AWS sharepoint (<https://doimspp.sharepoint.com/:f:/s/nps-nrss-imdiv/EkhiOXJpNKNMpTYuxNO5mBoBqZBScDcbpK5M03Ha61PoCw>). This code was, we believe, used to produce the centroid WBM data that is hosted on the Thredds server (NPS Product #2 above). The directory contains example code that was used to run the WBM for the park centroid at the PETE site. In the example, 10 random points were selected within the MACA grid cell that overlaps with the park centroid. The WBM was then run for each point, which involved extracting spatial model parameters (e.g., slope, aspect, soil storage) at each point and then running the WBM for each point. The ten runs were then aggregated using a daily average to produce a daily timeseries for each WBM variable (i.e., runoff, PET, AET, etc).
 
 Here, we recreate this workflow in the steps outlined below:
 
@@ -49,13 +49,13 @@ source("aws_r_tutorial/wbm_functions/ET_functions.R")
 source("aws_r_tutorial/wbm_functions/WB_functions.R")
 ```
 
-Next, we load in model parameters associated with the 10 randomly-selected points. These parameters are inputs to the WBM and were supplied within the AWS directory. The directory also includes the R script that was presumably used to generate these parameters (aws_r_tutorial/get_site_params.R). However, the specific datasets (rasters) that the get_site_params.R script loads are not available to us. Therefore, we instead rely on the previously compiled .csv file that is available.
+Next, we load in a .csv containing the model parameters associated with the 10 randomly-selected points. These parameters are inputs to the WBM and were supplied within the AWS directory. The directory also includes the R script that was presumably used to generate these parameters ("aws_r_tutorial/get_site_params.R"), though the specific datasets (rasters) required to run the script are not included.
 
 ```{r}
 wb_sites <- read.csv("aws_r_tutorial/PETE_site_parameters.csv") 
 ```
 
-We now load in the climate data (i.e., temperature and precipitation) that are input to the WBM. For the historical period, climate data are sourced from GridMET. While we don't have access to the exact input GridMET dataset that was used in the tutorial hosted on AWS (<https://doimspp.sharepoint.com/:f:/s/nps-nrss-imdiv/EkhiOXJpNKNMpTYuxNO5mBoBqZBScDcbpK5M03Ha61PoCw>), we do have access to the previously compiled climate data for PETE's centroid hosted on the amazonaws site (<https://parkfutures.s3.us-west-2.amazonaws.com/maca-tprh-data/index.html>). We assume this is the same climate dataset that was used previously and pull it in this data for the period ranging from 1979 to 1922. Based on our current understanding of the WBM, the model run is started in 1979, with the first year considered as a "warm up" period for both the centroid and the gridded WBM datasets (products #2 and #3).
+We now load in the climate data (i.e., temperature and precipitation) that are input to the WBM. For the historical period, climate data are sourced from GridMET. While we don't have access to the exact GridMET dataset that was used in the tutorial hosted on AWS (<https://doimspp.sharepoint.com/:f:/s/nps-nrss-imdiv/EkhiOXJpNKNMpTYuxNO5mBoBqZBScDcbpK5M03Ha61PoCw>), we do have access to the previously compiled climate data for PETE's centroid hosted on AWS (<https://parkfutures.s3.us-west-2.amazonaws.com/maca-tprh-data/index.html>). We assume this is the same climate dataset that was used previously and pull it in for the period ranging from 1979 to 2022. Based on our current understanding of the WBM, the model run is started in 1979, with the first year considered as a "warm up" period for both the centroid and the gridded WBM datasets (products #2 and #3).
 
 ```{r}
 Historical <- read.csv("aws_data_downloads/centroid_data/PETE_historical.csv")
@@ -169,7 +169,7 @@ dplyr::filter(year(as_date(Date)) > 1979)
 
 ## WBM Gridded
 
-Next, we load in the gridded WBM product. This datasaet was downloaded directly from AWS and clipped to the PETE park boundary. The earliest available date for the gridded WBM is January 1, 1980, with 1979 climate data used for a "warm up" simulation. Again, to our knowlege, the Oudin method was used to calculate PET in the gridded WBM. The python script "aws_python_script/tercek_script.py" contains the workflow that was used to develop the gridded dataset (provided by M. Tercek).
+Next, we load in the gridded WBM product. This datasaet was downloaded directly from AWS and clipped to the PETE park boundary. The earliest available date for the gridded WBM is January 1, 1980, with 1979 climate data assumed to be used for a "warm up" simulation. Again, to our knowledge, the Oudin method was used to calculate PET in the gridded WBM. The python script "aws_python_script/tercek_script.py" contains the workflow that was used to develop the gridded dataset (provided by M. Tercek).
 
 ```{r}
 WBData_online_grid <- rast("aws_data_downloads/gridded_data/PETE_runoff_historic_gridmet_1980_2023.tif")
@@ -223,16 +223,12 @@ First, plot three ***runoff*** products together through time:
 ```{r, fig.height = 3, fig.width = 6}
 ggplotly(
 ggplot() +
-    geom_point(data = WBData_online_centroid, aes(x = as_date(Date), y = `runoff in`, color = "Centroid"), size = 0.75) +
-    geom_point(data = grid_runoff, aes(x = date, y = mean_runoff, color = "Gridded"), alpha = 0.6, size = 0.75) +
+    geom_point(data = WBData_online_centroid, aes(x = as_date(Date), y = `runoff in`, color = "Centroid"), cex = 0.75) +
+    geom_point(data = grid_runoff, aes(x = date, y = mean_runoff, color = "Gridded"), alpha = 0.6, cex = 0.75) +
     geom_line(data = WBData_coded, aes(x = as_date(Date), y = mean_runoff, color = "R Code"), cex = 0.2, alpha = 0.8) +
-    #geom_point(data = WBData_coded, aes(x = as_date(Date), y = mean_runoff, color = "R Code"), size = 0.75) +
     theme_bw() +
     scale_color_manual("", values = c("#E70870", "#256BF5","black")) +
     labs(x = "Date", y = "Runoff (in)") 
-    # geom_text(data = WBData_online_centroid[1, ], aes(x = as.Date(Date), y = `runoff in`), label = "Centroid Data on AWS", color = "#E70870", vjust = -35, hjust = -1) +
-    # geom_text(data = grid_runoff[1, ], aes(x = date, y = mean_runoff), label = "Gridded Data on AWS", color = "#256BF5", vjust = -33, hjust = -1) +
-    # geom_text(data = WBData_coded[1, ], aes(x = as.Date(Date), y = mean_runoff), label = "Generated Data from Code", color = "black", vjust = -31, hjust = -0.8)
     )
 ```
 
@@ -301,8 +297,8 @@ All three ***PET*** products plotted together through time:
 ```{r, fig.height = 3, fig.width = 6}
 #ggplotly(
   ggplot() +
-    geom_point(data = WBData_online_centroid, aes(x = as_date(Date), y = `PET in`, color = "Centroid"), size = 0.75) +
-    geom_point(data = grid_pet, aes(x = date, y = mean_pet, color = "Gridded"), alpha = 0.6, size = 0.75) +
+    geom_point(data = WBData_online_centroid, aes(x = as_date(Date), y = `PET in`, color = "Centroid"), cex = 0.75) +
+    geom_point(data = grid_pet, aes(x = date, y = mean_pet, color = "Gridded"), alpha = 0.6, cex = 0.75) +
     geom_line(data = WBData_coded, aes(x = as_date(Date), y = mean_pet, color = "R Code"), cex = 0.2) +
     theme_bw() +
   scale_color_manual("", values = c("#E70870", "#256BF5","black")) +
@@ -434,13 +430,13 @@ ggpubr::ggarrange(one + theme(legend.position = "none"),
 
 ## Discussion
 
-The above plots show differences in runoff, PET, and rain from the three NPS WBM products. There is no clear bias between models, i.e., over- or under-estimation between two methods. The fact that rain differs between the two models suggests that differences are occurring early-on in the model, likely with rain-snow partitioning.
+The above plots show differences in runoff, PET, and rain from the three NPS WBM products. There is no clear bias between models, i.e., over- or under-estimation between the methods. The fact that rain differs between the two models suggests that differences are occurring early on in the model, likely with rain-snow partitioning.
 
-Based on discussions with the NPS group, we understand that published centroid WBM products and gridded WBM products were developed with different intentions and are inherently different by design. Key differences that we have identified by comparing the two code sources (M. Tercyk's python script (aws_python_script) and A. Runyon's R script (above) include:
+Based on discussions with the NPS group, we understand that the published centroid WBM products and gridded WBM products were developed with different intentions and are inherently different by design. Key differences that we have identified by comparing the two code sources (M. Tercek's python script (aws_python_script) and A. Runyon's R script (above)) include:
 
 -   The gridded dataset workfow (python) initiates soil water storage at full capacity, whereas the WBM R code initiates soil water storage at 0.
 
--   The calculation of Oudin PET differs: The R code incorporates a shade coefficient to reduce PET (though it is set to NULL and therefore not in use), whereas the gridded workflow does not include this option. The WBM R code also sets PET to 0 if there is at least 2 mm of snowpack, whereas the gridded product sets PET to 0 if there is any snow (snowpack \> 0).
+-   The calculation of Oudin PET differs: the R code incorporates a shade coefficient to reduce PET (though it is set to NULL and therefore not in use), whereas the gridded workflow does not include this option. The WBM R code also sets PET to 0 if there is at least 2 mm of snowpack, whereas the gridded product sets PET to 0 if there is any snow (snowpack \> 0).
 
 -   The centroid WBM sampled parameters and ran the model for 10 points within the GridMET cell. The method for sampling parameters and running the WBM for the gridded dataset is less clear.
 
@@ -448,7 +444,7 @@ Based on discussions with the NPS group, we understand that published centroid W
 
     -   The R WBM code applies varying conversion factors for celsius-to-Kelvin corrections (273.3, 273.16, and in one case, 237.3).
 
-    -   In the R WBM code, there is a potential redundancy in calculating PET. The `get_OudinPET()` function duplicates parts of the `modify_PET()` function. This could be intentional if the modify_PET function is not used with the Oudin method of calculating PET. However, both Oudin and modify_PET are used in the published tutorial on AWS. (See lines 116-131 above.) Below are the two functions:
+    -   In the R WBM code, there is a potential redundancy in calculating PET. The `get_OudinPET()` function duplicates parts of the `modify_PET()` function. This could be intentional if the modify_PET function is not used with the Oudin method of calculating PET. However, both `get_OudinPET()` and `modify_PET()` are used in the published tutorial on AWS. (See lines 116-131 above.) Below are the two functions:
 
 ```{r, eval = FALSE, echo = TRUE}
 get_OudinPET = function(doy, lat, snowpack, tmean, slope, aspect, shade.coeff=NULL){
@@ -581,7 +577,7 @@ ggplot() +
 
 Some other possible explanations for differences between the three products include:
 
-1)  We assumed that the coordinates provided in the folder hosted on AWS ("aws_r_tutorial/PETE_site_parameters.csv") were used in developing PETE's published centroid data, however, this may not be the case.
+1)  We assumed that the coordinates provided in the folder hosted on AWS ("aws_r_tutorial/PETE_site_parameters.csv") were used in developing PETE's published centroid data. However, this may not be the case.
 
 2)  We were unable to find the exact historical climate dataset used in the AWS tutorial. Instead, we used PETE's centroid's historical GridMET data posted on AWS (<https://parkfutures.s3.us-west-2.amazonaws.com/maca-tprh-data/index.html>). If a different data set was used to generate the centroid data, this could also explain the discrepancies.
 
