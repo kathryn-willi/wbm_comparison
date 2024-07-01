@@ -573,7 +573,7 @@ ggplot() +
   geom_point(data = WBData_coded_no_modify_PET, aes(x = as_date(Date), y = mean_runoff, color = "Without ET Mod"), alpha = 1,cex = .5) +
   #geom_col(aes(x = as_date(WBData_coded$Date), y = WBData_coded$mean_runoff - WBData_coded_no_modify_PET$mean_runoff), color = "#578010") +
   theme_bw() +
-  scale_color_manual("", values = c("black","#E70870", "#256BF5","black")) +
+  scale_color_manual("", values = c("black","#E70870")) +
   ggtitle("ET Modification Comparison") +
   xlab("Date") +
   ylab("Runoff (in)")
