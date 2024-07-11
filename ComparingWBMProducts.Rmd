@@ -1,6 +1,6 @@
 ---
 title: "Comparison of NPS WBM Products"
-author: "Katie Willi"
+author: "Radical Open Science Syndicate"
 output:
   html_document:
     code_folding: show
